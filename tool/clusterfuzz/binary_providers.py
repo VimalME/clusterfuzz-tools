@@ -35,6 +35,7 @@ CHECKOUT_MESSAGE = (
     'please re-run with --current.\n'
     'Shall we proceed with the following command:\n'
     '{cmd} in {source_dir}?')
+ARGS_GN_FILENAME = 'args.gn'
 
 
 logger = logging.getLogger('clusterfuzz')
@@ -123,6 +124,28 @@ def install_build_deps_32bit(source_dir):
       preexec_fn=None, redirect_stderr_to_stdout=True)
 
 
+def gclient_runhooks_msan(source_dir, msan_track_origins):
+  """Run gclient runhooks for msan."""
+  common.execute(
+      'gclient', 'runhooks', source_dir,
+      env={
+          'GYP_DEFINES': (
+              'msan=1 msan_track_origins=%s '
+              'use_prebuilt_instrumented_libraries=1'
+              % (msan_track_origins or '2'))
+      }
+  )
+
+
+def read_gn_args(gn_args, downloaded_args_gn_path):
+  """Read gn_args from variable if exist. Otherwise, get it from file."""
+  if gn_args:
+    return gn_args
+
+  with open(downloaded_args_gn_path, 'r') as f:
+    return f.read()
+
+
 class BinaryProvider(object):
   """Downloads/builds and then provides the location of a binary."""
 
@@ -207,7 +230,7 @@ class GenericBuilder(BinaryProvider):
     self.options = options
     self.source_directory = os.environ.get(definition.source_var)
     self.gn_args = None
-    self.gn_args_options = None
+    self.gn_args_options = {}
     self.gn_flags = '--check'
     self.definition = definition
 
@@ -270,58 +293,71 @@ class GenericBuilder(BinaryProvider):
 
   def setup_gn_args(self):
     """Ensures that args.gn is set up properly."""
-    # Remove existing gn file from build directory.
-    # TODO(tanin): Refactor the condition to a module function.
-    args_gn_path = os.path.join(self.build_directory, 'args.gn')
-    if os.path.isfile(args_gn_path):
-      os.remove(args_gn_path)
-
-    # Create build directory if it does not already exist.
-    # TODO(tanin): Refactor the condition to a module function.
-    if not os.path.exists(self.build_directory):
-      os.makedirs(self.build_directory)
-
-    # If no args.gn file is found, get it from downloaded build.
-    # TODO(tanin): Refactor the condition to a module function.
-    if self.gn_args:
-      gn_args = self.gn_args
-    else:
-      args_gn_downloaded_build_path = os.path.join(
-          self.build_dir_name(), 'args.gn')
-      with open(args_gn_downloaded_build_path, 'r') as f:
-        gn_args = f.read()
+    gn_args = read_gn_args(
+        self.gn_args,
+        downloaded_args_gn_path=os.path.join(
+            self.build_dir_name(), ARGS_GN_FILENAME))
 
     # Add additional options to existing gn args.
     args_hash = self.deserialize_gn_args(gn_args)
+    for k, v in self.gn_args_options.iteritems():
+      args_hash[k] = v
+
     args_hash = self.setup_gn_goma_params(args_hash)
     args_hash = setup_debug_symbol_if_needed(
         args_hash, self.definition.sanitizer, self.options.enable_debug)
-    if self.gn_args_options:
-      for k, v in self.gn_args_options.iteritems():
-        args_hash[k] = v
+
+    self.gn_args = args_hash
+
+  def gn_gen(self):
+    """Finalize args.gn and run `gn gen`."""
+    args_gn_path = os.path.join(self.build_directory, ARGS_GN_FILENAME)
+
+    common.ensure_dir(self.build_directory)
+    common.delete_if_exists(args_gn_path)
 
     # Let users edit the current args.
-    content = self.serialize_gn_args(args_hash)
+    content = self.serialize_gn_args(self.gn_args)
     content = common.edit_if_needed(
         content, prefix='edit-args-gn-',
-        comment='Edit args.gn before building.',
+        comment='Edit %s before building.' % ARGS_GN_FILENAME,
         should_edit=self.options.edit_mode)
 
     # Write args to file and store.
     with open(args_gn_path, 'w') as f:
       f.write(content)
-    self.gn_args = content
+    self.gn_args = self.deserialize_gn_args(content)
 
     logger.info(
         common.colorize('\nGenerating %s:\n%s\n', common.BASH_GREEN_MARKER),
-        args_gn_path, self.gn_args)
+        args_gn_path, content)
 
     common.execute('gn', 'gen %s %s' % (self.gn_flags, self.build_directory),
                    self.source_directory)
 
-  def pre_build_steps(self):
-    """Steps to be run before the target is built."""
+  def install_deps(self):
+    """Run all commands that only need to run once. This means the commands
+      within this method are not required to be executed in a subsequential
+      run."""
     pass
+
+  def gclient_sync(self):
+    """Run gclient sync. This is separated from install_deps because it is
+      needed in every build."""
+    common.execute('gclient', 'sync', self.source_directory)
+
+  def gclient_runhooks(self):
+    """Run gclient runhooks. This is separated from install_deps because it is
+      needed in every build, yet the arguments might differ."""
+    pass
+
+  def setup_all_deps(self):
+    """Setup all dependencies."""
+    if self.options.skip_deps:
+      return
+    self.gclient_sync()
+    self.gclient_runhooks()
+    self.install_deps()
 
   def get_goma_cores(self):
     """Choose the correct amount of GOMA cores for a build."""
@@ -339,19 +375,20 @@ class GenericBuilder(BinaryProvider):
 
   def build_target(self):
     """Build the correct revision in the source directory."""
-    if not self.options.disable_gclient:
-      common.execute('gclient', 'sync', self.source_directory)
-
-    self.pre_build_steps()
     self.setup_gn_args()
-    goma_cores = self.get_goma_cores()
-    goma_load = self.get_goma_load()
+    self.setup_all_deps()
+    self.gn_gen()
 
     common.execute(
         'ninja',
-        "-w 'dupbuild=err' -C %s -j %i -l %i %s" % (
-            self.build_directory, goma_cores, goma_load, self.target),
-        self.source_directory, capture_output=False,
+        ("-w 'dupbuild=err' -C {build_dir} -j {goma_cores} -l {goma_load} "
+         '{target}'.format(
+             build_dir=self.build_directory,
+             goma_cores=self.get_goma_cores(),
+             goma_load=self.get_goma_load(),
+             target=self.target)),
+        self.source_directory,
+        capture_output=False,
         stdout_transformer=output_transformer.Ninja())
 
   def get_build_directory(self):
@@ -395,27 +432,6 @@ class PdfiumBuilder(GenericBuilder):
     self.gn_flags = ''
 
 
-class V8Builder(GenericBuilder):
-  """Builds a fresh v8 binary."""
-
-  def __init__(self, testcase, definition, options):
-    super(V8Builder, self).__init__(
-        testcase=testcase,
-        definition=definition,
-        binary_name='d8',
-        target=None,
-        options=options)
-    self.git_sha = sha_from_revision(testcase.revision, 'v8/v8')
-    self.gn_args = testcase.gn_args
-    self.name = 'V8'
-
-  def pre_build_steps(self):
-    if not self.options.disable_gclient:
-      common.execute('gclient', 'runhooks', self.source_directory)
-    if not self.options.current:
-      common.execute('python', 'tools/clang/scripts/update.py',
-                     self.source_directory)
-
 class ChromiumBuilder(GenericBuilder):
   """Builds a specific target from inside a Chromium source repository."""
 
@@ -437,74 +453,86 @@ class ChromiumBuilder(GenericBuilder):
     self.gn_args = testcase.gn_args
     self.name = 'chromium'
 
-  def pre_build_steps(self):
-    if not self.options.disable_gclient:
-      common.execute('gclient', 'runhooks', self.source_directory)
-    if not self.options.current:
-      common.execute('python', 'tools/clang/scripts/update.py',
-                     self.source_directory)
+  def install_deps(self):
+    """Run all commands that only need to run once. This means the commands
+      within this method are not required to be executed in a subsequential
+      run."""
+    common.execute('python', 'tools/clang/scripts/update.py',
+                   self.source_directory)
+
+  def gclient_runhooks(self):
+    """Run gclient runhooks. This is separated from install_deps because it is
+      needed in every build, yet the arguments might differ."""
+    common.execute('gclient', 'runhooks', self.source_directory)
+
+
+class V8Builder(GenericBuilder):
+  """Builds a fresh v8 binary."""
+
+  def __init__(self, testcase, definition, options):
+    super(V8Builder, self).__init__(
+        testcase=testcase,
+        definition=definition,
+        binary_name='d8',
+        target=None,
+        options=options)
+    self.git_sha = sha_from_revision(testcase.revision, 'v8/v8')
+    self.gn_args = testcase.gn_args
+    self.name = 'V8'
+
+  def install_deps(self):
+    """Run all commands that only need to run once. This means the commands
+      within this method are not required to be executed in a subsequential
+      run."""
+    common.execute('python', 'tools/clang/scripts/update.py',
+                   self.source_directory)
+
+  def gclient_runhooks(self):
+    """Run gclient runhooks. This is separated from install_deps because it is
+      needed in every build, yet the arguments might differ."""
+    common.execute('gclient', 'runhooks', self.source_directory)
 
 
 class CfiChromiumBuilder(ChromiumBuilder):
   """Build a CFI chromium build."""
 
-  def pre_build_steps(self):
-    """Run the pre-build steps and then run download_gold_plugin.py."""
-    super(CfiChromiumBuilder, self).pre_build_steps()
+  def install_deps(self):
+    """Run download_gold_plugin.py."""
+    super(CfiChromiumBuilder, self).install_deps()
     common.execute('build/download_gold_plugin.py', '', self.source_directory)
 
 
 class MsanChromiumBuilder(ChromiumBuilder):
   """Build a MSAN chromium build."""
 
-  def setup_gn_args(self):
-    """Run the setup_gn_args and re-run hooks with special GYP_DEFINES."""
-    super(MsanChromiumBuilder, self).setup_gn_args()
-
-    args_hash = self.deserialize_gn_args(self.gn_args)
-    msan_track_origins_value = (int(args_hash['msan_track_origins'])
-                                if 'msan_track_origins' in args_hash
-                                else 2)
-    if not self.options.disable_gclient:
-      common.execute('gclient', 'runhooks', self.source_directory,
-                     env={'GYP_DEFINES':
-                          ('msan=1 msan_track_origins=%d '
-                           'use_prebuilt_instrumented_libraries=1') %
-                          msan_track_origins_value})
+  def gclient_runhooks(self):
+    """Run gclient runhooks."""
+    gclient_runhooks_msan(
+        self.source_directory, self.gn_args.get('msan_track_origins'))
 
 
 class MsanV8Builder(V8Builder):
   """Build a MSAN V8 build."""
 
-  def setup_gn_args(self):
-    """Run the setup_gn_args and re-run hooks with special GYP_DEFINES."""
-    super(MsanV8Builder, self).setup_gn_args()
-
-    args_hash = self.deserialize_gn_args(self.gn_args)
-    msan_track_origins_value = (int(args_hash['msan_track_origins'])
-                                if 'msan_track_origins' in args_hash
-                                else 2)
-    if not self.options.disable_gclient:
-      common.execute('gclient', 'runhooks', self.source_directory,
-                     env={'GYP_DEFINES':
-                          ('msan=1 msan_track_origins=%d '
-                           'use_prebuilt_instrumented_libraries=1') %
-                          msan_track_origins_value})
+  def gclient_runhooks(self):
+    """Run gclient runhooks."""
+    gclient_runhooks_msan(
+        self.source_directory, self.gn_args.get('msan_track_origins'))
 
 
 class ChromiumBuilder32Bit(ChromiumBuilder):
   """Build a 32-bit chromium build."""
 
-  def pre_build_steps(self):
-    """Run the pre-build steps and then install 32-bit libraries."""
-    super(ChromiumBuilder32Bit, self).pre_build_steps()
+  def install_deps(self):
+    """Install other deps."""
+    super(ChromiumBuilder32Bit, self).install_deps()
     install_build_deps_32bit(self.source_directory)
 
 
 class V8Builder32Bit(V8Builder):
   """Build a 32-bit V8 build."""
 
-  def pre_build_steps(self):
-    """Run the pre-build steps and then install 32-bit libraries."""
-    super(V8Builder32Bit, self).pre_build_steps()
+  def install_deps(self):
+    """Install other deps."""
+    super(V8Builder32Bit, self).install_deps()
     install_build_deps_32bit(self.source_directory)

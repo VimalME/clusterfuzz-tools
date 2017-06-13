@@ -17,7 +17,7 @@ def make_options(
     disable_xvfb=False,
     target_args=None,
     edit_mode=False,
-    disable_gclient=False,
+    skip_deps=False,
     enable_debug=False,
     goma_dir=None):
   return common.Options(
@@ -31,6 +31,6 @@ def make_options(
       disable_xvfb=disable_xvfb,
       target_args=target_args,
       edit_mode=edit_mode,
-      disable_gclient=disable_gclient,
+      skip_deps=skip_deps,
       enable_debug=enable_debug,
       goma_dir=goma_dir)

@@ -471,21 +471,42 @@ class DeleteIfExistsTest(helpers.ExtendedTestCase):
 
   def setUp(self):
     self.setup_fake_filesystem()
+    self.directory = '/testcase'
+    self.filename = os.path.join(self.directory, 'testcase.js')
+    os.makedirs(self.directory)
+    self.fs.CreateFile(self.filename, contents='text')
 
-  def test_deletes_file(self):
-    """Ensure the file gets deleted."""
+  def test_delete_dir(self):
+    """Ensure the dir is deleted."""
+    common.delete_if_exists(self.directory)
+    self.assertFalse(os.path.exists(self.directory))
+    self.assertFalse(os.path.exists(self.filename))
 
-    home = os.path.expanduser('~')
-    directory = os.path.join(home, 'testcase')
-    filename = os.path.join(directory, 'testcase.js')
-    os.makedirs(directory)
-    with open(filename, 'w') as f:
-      f.write('text')
-    self.assertTrue(os.path.isfile(filename))
+  def test_delete_file(self):
+    """Ensure the file is deleted."""
+    common.delete_if_exists(self.filename)
+    self.assertTrue(os.path.exists(self.directory))
+    self.assertFalse(os.path.exists(self.filename))
 
-    common.delete_if_exists(directory)
 
-    self.assertFalse(os.path.exists(directory))
+class EnsureDirTest(helpers.ExtendedTestCase):
+  """Tests the ensure_dir method."""
+
+  def setUp(self):
+    self.setup_fake_filesystem()
+
+  def test_not_exist(self):
+    """Test ensuring dir when the dir doesn't exist."""
+    self.assertFalse(os.path.exists('/test'))
+    common.ensure_dir('/test')
+    self.assertTrue(os.path.exists('/test'))
+
+  def test_exist(self):
+    """Test ensuring dir when the dir exists."""
+    os.makedirs('/test')
+    self.assertTrue(os.path.exists('/test'))
+    common.ensure_dir('/test')
+    self.assertTrue(os.path.exists('/test'))
 
 
 class GetSourceDirectoryTest(helpers.ExtendedTestCase):

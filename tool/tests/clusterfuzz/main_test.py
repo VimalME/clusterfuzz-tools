@@ -35,17 +35,17 @@ class MainTest(unittest.TestCase):
     main.execute(
         ['reproduce', '1234', '--disable-xvfb', '-j', '25', '--current',
          '--disable-goma', '-i', '500', '--target-args', '--test --test2',
-         '--edit-mode', '--disable-gclient', '--enable-debug', '-l', '20'])
+         '--edit-mode', '--skip-deps', '--enable-debug', '-l', '20'])
 
     self.mock.start_loggers.assert_has_calls([mock.call()])
     self.mock.execute.assert_has_calls([
         mock.call(build='chromium', current=False, disable_goma=False,
                   goma_threads=None, testcase_id='1234', iterations=3,
                   disable_xvfb=False, target_args='', edit_mode=False,
-                  disable_gclient=False, enable_debug=False, goma_load=None),
+                  skip_deps=False, enable_debug=False, goma_load=None),
         mock.call(build='chromium', current=True, disable_goma=True,
                   goma_threads=25, testcase_id='1234', iterations=500,
                   disable_xvfb=True, target_args='--test --test2',
-                  edit_mode=True, disable_gclient=True, enable_debug=True,
+                  edit_mode=True, skip_deps=True, enable_debug=True,
                   goma_load=20),
     ])

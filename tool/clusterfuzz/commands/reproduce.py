@@ -221,7 +221,7 @@ def warn_unreproducible_if_needed(current_testcase):
 
 @stackdriver_logging.log
 def execute(testcase_id, current, build, disable_goma, goma_threads, goma_load,
-            iterations, disable_xvfb, target_args, edit_mode, disable_gclient,
+            iterations, disable_xvfb, target_args, edit_mode, skip_deps,
             enable_debug, goma_dir=None):
   """Execute the reproduce command."""
   options = common.Options(
@@ -235,7 +235,7 @@ def execute(testcase_id, current, build, disable_goma, goma_threads, goma_load,
       disable_xvfb=disable_xvfb,
       target_args=target_args,
       edit_mode=edit_mode,
-      disable_gclient=disable_gclient,
+      skip_deps=skip_deps,
       enable_debug=enable_debug,
       goma_dir=goma_dir)
 

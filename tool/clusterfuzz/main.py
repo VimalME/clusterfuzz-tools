@@ -67,8 +67,9 @@ def execute(argv=None):
       '--edit-mode', action='store_true', default=False,
       help='Edit args.gn before building and target arguments before running.')
   reproduce.add_argument(
-      '--disable-gclient', action='store_true', default=False,
-      help='Disable running gclient commands (e.g. sync, runhooks).')
+      '--skip-deps', action='store_true', default=False,
+      help=('Skip installing dependencies: '
+            'gclient sync, gclient runhooks, install-build-deps.sh, and etc.'))
   reproduce.add_argument(
       '--enable-debug', action='store_true', default=False,
       help=(

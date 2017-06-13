@@ -61,7 +61,7 @@ Options = namedlist.namedlist(
     'Options',
     ['testcase_id', 'current', 'build', 'disable_goma', 'goma_threads',
      'goma_load', 'iterations', 'disable_xvfb', 'target_args', 'edit_mode',
-     'disable_gclient', 'enable_debug', 'goma_dir']
+     'skip_deps', 'enable_debug', 'goma_dir']
 )
 
 
@@ -471,7 +471,18 @@ def get_resource(chmod_permission, *paths):
 def delete_if_exists(path):
   """Deletes file if path exists."""
   if os.path.exists(path):
-    shutil.rmtree(path)
+    if os.path.isfile(path):
+      os.remove(path)
+    else:
+      shutil.rmtree(path)
+
+
+def ensure_dir(path):
+  """Make dir if not exist."""
+  if os.path.exists(path):
+    return
+
+  os.makedirs(path)
 
 
 def get_valid_abs_dir(path):
